@@ -88,15 +88,16 @@ local templates = nil
 
 Prompt.templates = { planning = nil, editing = nil, suggesting = nil }
 
+-- Creates a directory in the cache path for the given buffer and copies the custom prompts to it.
 -- We need to do this beacuse the prompt template engine requires a given directory to load all required files.
 -- PERF: Hmm instead of copy to cache, we can also load in globals context, but it requires some work on bindings. (eh maybe?)
----@param project_root string
+---@param bufnr number
 ---@return string the resulted cache_directory to be loaded with avante_templates
-Prompt.get = function(project_root)
+Prompt.get = function(bufnr)
   if not P.available() then error("Make sure to build avante (missing avante_templates)", 2) end
 
   -- get root directory of given bufnr
-  local directory = Path:new(project_root)
+  local directory = Path:new(Utils.root.get({ buf = bufnr }))
   if Utils.get_os_name() == "windows" then directory = Path:new(directory:absolute():gsub("^%a:", "")[1]) end
   ---@cast directory Path
   ---@type Path

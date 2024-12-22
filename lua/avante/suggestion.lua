@@ -134,6 +134,7 @@ L5:    pass
 
   Llm.stream({
     provider = provider,
+    bufnr = bufnr,
     ask = true,
     diagnostics = vim.json.encode(diagnostics),
     selected_files = { { content = code_content, file_type = filetype, path = "" } },
