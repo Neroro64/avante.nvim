@@ -18,10 +18,10 @@ M.CANCEL_PATTERN = "AvanteLLMEscape"
 
 local group = api.nvim_create_augroup("avante_llm", { clear = true })
 
----@param opts GeneratePromptsOptions
----@return AvantePromptOptions
-M.generate_prompts = function(opts)
-  local Provider = opts.provider or P[Config.provider]
+---@param opts StreamOptions
+---@param Provider AvanteProviderFunctor
+M._stream = function(opts, Provider)
+  -- print opts
   local mode = opts.mode or "planning"
   ---@type AvanteProviderFunctor
   local _, body_opts = P.parse_config(Provider)
@@ -42,8 +42,7 @@ M.generate_prompts = function(opts)
     instructions = table.concat(lines, "\n")
   end
 
-  local project_root = Utils.root.get()
-  Path.prompts.initialize(Path.prompts.get(project_root))
+  Path.prompts.initialize(Path.prompts.get(opts.bufnr))
 
   local template_opts = {
     use_xml_format = Provider.use_xml_format,
@@ -107,30 +106,11 @@ M.generate_prompts = function(opts)
   end
 
   ---@type AvantePromptOptions
-  return {
+  local code_opts = {
     system_prompt = system_prompt,
     messages = messages,
     image_paths = image_paths,
   }
-end
-
----@param opts GeneratePromptsOptions
----@return integer
-M.calculate_tokens = function(opts)
-  local code_opts = M.generate_prompts(opts)
-  local tokens = Utils.tokens.calculate_tokens(code_opts.system_prompt)
-  for _, message in ipairs(code_opts.messages) do
-    tokens = tokens + Utils.tokens.calculate_tokens(message.content)
-  end
-  return tokens
-end
-
----@param opts StreamOptions
-M._stream = function(opts)
-  local Provider = opts.provider or P[Config.provider]
-
-  local code_opts = M.generate_prompts(opts)
-
   ---@type string
   local current_event_state = nil
 
@@ -270,7 +250,7 @@ M._stream = function(opts)
   return active_job
 end
 
-local function _merge_response(first_response, second_response, opts)
+local function _merge_response(first_response, second_response, opts, Provider)
   local prompt = "\n" .. Config.dual_boost.prompt
   prompt = prompt
     :gsub("{{[%s]*provider1_output[%s]*}}", first_response)
@@ -281,28 +261,28 @@ local function _merge_response(first_response, second_response, opts)
   -- append this reference prompt to the code_opts messages at last
   opts.instructions = opts.instructions .. prompt
 
-  M._stream(opts)
+  M._stream(opts, Provider)
 end
 
-local function _collector_process_responses(collector, opts)
+local function _collector_process_responses(collector, opts, Provider)
   if not collector[1] or not collector[2] then
     Utils.error("One or both responses failed to complete")
     return
   end
-  _merge_response(collector[1], collector[2], opts)
+  _merge_response(collector[1], collector[2], opts, Provider)
 end
 
-local function _collector_add_response(collector, index, response, opts)
+local function _collector_add_response(collector, index, response, opts, Provider)
   collector[index] = response
   collector.count = collector.count + 1
 
   if collector.count == 2 then
     collector.timer:stop()
-    _collector_process_responses(collector, opts)
+    _collector_process_responses(collector, opts, Provider)
   end
 end
 
-M._dual_boost_stream = function(opts, Provider1, Provider2)
+M._dual_boost_stream = function(opts, Provider, Provider1, Provider2)
   Utils.debug("Starting Dual Boost Stream")
 
   local collector = {
@@ -321,7 +301,7 @@ M._dual_boost_stream = function(opts, Provider1, Provider2)
         Utils.warn("Dual boost stream timeout reached")
         collector.timer:stop()
         -- Process whatever responses we have
-        _collector_process_responses(collector, opts)
+        _collector_process_responses(collector, opts, Provider)
       end
     end)
   )
@@ -339,19 +319,15 @@ M._dual_boost_stream = function(opts, Provider1, Provider2)
           return
         end
         Utils.debug(string.format("Response %d completed", index))
-        _collector_add_response(collector, index, response, opts)
+        _collector_add_response(collector, index, response, opts, Provider)
       end,
     })
   end
 
   -- Start both streams
   local success, err = xpcall(function()
-    local opts1 = create_stream_opts(1)
-    opts1.provider = Provider1
-    M._stream(opts1)
-    local opts2 = create_stream_opts(2)
-    opts2.provider = Provider2
-    M._stream(opts2)
+    M._stream(create_stream_opts(1), Provider1)
+    M._stream(create_stream_opts(2), Provider2)
   end, function(err) return err end)
   if not success then Utils.error("Failed to start dual_boost streams: " .. tostring(err)) end
 end
@@ -374,13 +350,12 @@ end
 ---@field diagnostics string | nil
 ---@field history_messages AvanteLLMMessage[]
 ---
----@class GeneratePromptsOptions: TemplateOptions
+---@class StreamOptions: TemplateOptions
 ---@field ask boolean
+---@field bufnr integer
 ---@field instructions string
 ---@field mode LlmMode
 ---@field provider AvanteProviderFunctor | nil
----
----@class StreamOptions: GeneratePromptsOptions
 ---@field on_chunk AvanteChunkParser
 ---@field on_complete AvanteCompleteParser
 
@@ -402,10 +377,11 @@ M.stream = function(opts)
       return original_on_complete(err)
     end)
   end
+  local Provider = opts.provider or P[Config.provider]
   if Config.dual_boost.enabled then
-    M._dual_boost_stream(opts, P[Config.dual_boost.first_provider], P[Config.dual_boost.second_provider])
+    M._dual_boost_stream(opts, Provider, P[Config.dual_boost.first_provider], P[Config.dual_boost.second_provider])
   else
-    M._stream(opts)
+    M._stream(opts, Provider)
   end
 end
 
